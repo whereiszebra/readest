@@ -32,7 +32,7 @@ const nextConfig = {
   reactStrictMode: true,
   serverExternalPackages: ['isows'],
   allowedDevOrigins: ['192.168.2.120'],
-  webpack: (config) => {
+  webpack: (config, { isServer }) => {
     config.resolve.alias = {
       ...config.resolve.alias,
       nunjucks: 'nunjucks/browser/nunjucks.js',
@@ -41,7 +41,8 @@ const nextConfig = {
       // Without an alias, webpack walks up from that source location and
       // can't find fflate (only installed in this app's node_modules).
       fflate: path.resolve(__dirname, 'node_modules/fflate'),
-      ...(appPlatform !== 'web' ? { '@tursodatabase/database-wasm': false } : {}),
+      // Exclude turso from non-web platforms and from server bundles (Cloudflare Workers don't need it)
+      ...((appPlatform !== 'web' || isServer) ? { '@tursodatabase/database-wasm': false } : {}),
     };
     return config;
   },

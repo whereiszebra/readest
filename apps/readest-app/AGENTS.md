@@ -109,3 +109,85 @@ Available gstack skills:
 - `/document-release` — Post-ship documentation update
 
 If gstack skills aren't working, run `cd .claude/skills/gstack && ./setup` to build the binary and register skills.
+
+---
+
+## Word Gloss Feature (进行中 / In Progress)
+
+### 功能说明
+
+「词汇注释」功能：阅读中文电子书时，自动将段落内少量汉字替换为英文单词，英文单词上方显示「中文:谐音」小字注释，帮助读者学习英语词汇。
+
+### 涉及文件
+
+| 文件                                                       | 说明                                                        |
+| ---------------------------------------------------------- | ----------------------------------------------------------- |
+| `src/app/reader/hooks/useWordGloss.ts`                     | 核心 Hook：IntersectionObserver 触发、DOM 操作、ruby 注入   |
+| `src/services/wordGloss/deepseekLayered.ts`                | DeepSeek API 调用、段落缓存、词汇替换 JSON 解析             |
+| `scripts/build-android.sh`                                 | Android APK 一键构建 + 签名 + 安装脚本                      |
+| `src-tauri/gen/android/app/src/main/res/values/colors.xml` | 已添加 `ic_launcher_background` 颜色资源（Gradle 构建所需） |
+
+### API Key 配置
+
+`.env.local` 中设置：
+
+```
+NEXT_PUBLIC_DEEPSEEK_WORD_GLOSS_KEY=<your-key>
+```
+
+### 当前实现状态（2026-05-08）
+
+**已解决的问题：**
+
+- 段落中断问题（新书已正常）
+- 每段英文替换数量从 5 降至最多 3 个（prompt 已更新）
+- Android WebView 上 `<ruby>/<rt>` 对齐失效 → 改用 `inline-flex` 列布局解决
+- 对齐问题确认已修复（用户验证通过）
+
+**待修复问题（最新）：**
+
+英文单词左右出现多余空白，原因是注释文字宽于英文单词，撑宽了 flex 容器：
+
+```
+陈嘉措的   handwriting 很好看   ← 多余空白
+```
+
+**修复方案**（尚未应用到代码）：
+
+将 `useWordGloss.ts` 中 wrapper/annotation 样式从 `inline-flex` 列布局改为 `inline-block + position:absolute` 注释悬浮：
+
+```javascript
+// wrapper
+wrapper.style.cssText =
+  'display:inline-block;position:relative;white-space:nowrap;vertical-align:bottom;';
+
+// annotation（绝对定位，不占宽度）
+annotation.style.cssText =
+  'position:absolute;bottom:100%;left:50%;transform:translateX(-50%);font-size:0.6em;opacity:0.4;white-space:nowrap;letter-spacing:0;line-height:1.3;';
+```
+
+### Android 构建流程
+
+环境要求（macOS）：
+
+- Android SDK: `~/Library/Android/sdk`
+- NDK: `~/Library/Android/sdk/ndk/30.0.14904198`
+- Build Tools: `36.1.0`
+- Debug keystore: `~/.android/debug.keystore`（首次运行 `keytool` 生成）
+
+一键构建：
+
+```bash
+bash scripts/build-android.sh
+```
+
+脚本会：1) 通过 SOCKS5 代理编译 aarch64 APK → 2) apksigner 签名 → 3) adb 安装到已连接设备
+
+**注意**：构建必须走代理（`socks5://127.0.0.1:7890`），绝不能绕开代理。
+
+### Chrome 远程调试
+
+```bash
+adb forward tcp:9222 localabstract:webview_devtools_remote_<pid>
+# 然后在桌面 Chrome 打开 chrome://inspect
+```

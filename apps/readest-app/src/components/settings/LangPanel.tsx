@@ -41,6 +41,7 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
   const [translationProvider, setTranslationProvider] = useState(viewSettings.translationProvider);
   const [translateTargetLang, setTranslateTargetLang] = useState(viewSettings.translateTargetLang);
   const [showTranslateSource, setShowTranslateSource] = useState(viewSettings.showTranslateSource);
+  const [wordGlossEnabled, setWordGlossEnabled] = useState(viewSettings.wordGlossEnabled ?? false);
   const [ttsReadAloudText, setTtsReadAloudText] = useState(viewSettings.ttsReadAloudText);
   const [replaceQuotationMarks, setReplaceQuotationMarks] = useState(
     viewSettings.replaceQuotationMarks,
@@ -203,6 +204,14 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
   }, [showTranslateSource]);
 
   useEffect(() => {
+    if (wordGlossEnabled === (viewSettings.wordGlossEnabled ?? false)) return;
+    saveViewSettings(envConfig, bookKey, 'wordGlossEnabled', wordGlossEnabled, false, false);
+    viewSettings.wordGlossEnabled = wordGlossEnabled;
+    setViewSettings(bookKey, { ...viewSettings });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wordGlossEnabled]);
+
+  useEffect(() => {
     if (ttsReadAloudText === viewSettings.ttsReadAloudText) return;
     saveViewSettings(envConfig, bookKey, 'ttsReadAloudText', ttsReadAloudText, false, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -336,6 +345,29 @@ const LangPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset 
           />
         </SettingsRow>
       </BoxedList>
+
+      <div className='w-full' data-setting-id='settings.language.wordGloss'>
+        <h2 className='mb-2 font-medium'>{_('Word Gloss')}</h2>
+        <div className='card border-base-200 bg-base-100 border shadow'>
+          <div className='divide-base-200'>
+            <div className='config-item !h-16'>
+              <div className='flex flex-col gap-1'>
+                <span className=''>{_('Inline Word Translation')}</span>
+                <span className='text-base-content/60 text-xs'>
+                  {_('Appends English after each Chinese content word (requires DeepSeek API key)')}
+                </span>
+              </div>
+              <input
+                type='checkbox'
+                className='toggle'
+                checked={wordGlossEnabled}
+                onChange={() => setWordGlossEnabled(!wordGlossEnabled)}
+                disabled={!bookKey}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
 
       {(isCJKEnv() || view?.language.isCJK) && (
         <BoxedList title={_('Punctuation')} data-setting-id='settings.language.quotationMarks'>

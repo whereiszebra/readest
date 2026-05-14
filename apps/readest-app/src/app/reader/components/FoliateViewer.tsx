@@ -60,6 +60,7 @@ import { TransformContext } from '@/services/transformers/types';
 import { transformContent } from '@/services/transformService';
 import { lockScreenOrientation } from '@/utils/bridge';
 import { useTextTranslation } from '../hooks/useTextTranslation';
+import { useWordGloss } from '../hooks/useWordGloss';
 import { useBookCoverAutoSave } from '../hooks/useAutoSaveBookCover';
 import { useDiscordPresence } from '@/hooks/useDiscordPresence';
 import { manageSyntaxHighlighting } from '@/utils/highlightjs';
@@ -132,6 +133,7 @@ const FoliateViewer: React.FC<{
   useBookCoverAutoSave(bookKey);
   const { syncState, conflictDetails, resolveWithLocal, resolveWithRemote } = useKOSync(bookKey);
   useTextTranslation(bookKey, viewRef.current);
+  useWordGloss(bookKey, viewRef.current);
 
   const progressRelocateHandler = (event: Event) => {
     const detail = (event as CustomEvent).detail;

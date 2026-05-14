@@ -287,6 +287,7 @@ export interface TranslatorConfig {
   translateTargetLang: string;
   showTranslateSource: boolean;
   ttsReadAloudText: string;
+  wordGlossEnabled: boolean;
 }
 
 export interface NoteExportConfig {

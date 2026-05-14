@@ -348,6 +348,7 @@ export const DEFAULT_TRANSLATOR_CONFIG: TranslatorConfig = {
   translateTargetLang: '',
   showTranslateSource: true,
   ttsReadAloudText: 'both',
+  wordGlossEnabled: false,
 };
 
 export const DEFAULT_NOTE_EXPORT_CONFIG: NoteExportConfig = {
