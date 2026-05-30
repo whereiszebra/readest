@@ -7,6 +7,8 @@
 
 [Readest][link-website] is an open-source ebook reader designed for immersive and deep reading experiences. Built as a modern rewrite of [Foliate](https://github.com/johnfactotum/foliate), it leverages [Next.js 16](https://github.com/vercel/next.js) and [Tauri v2](https://github.com/tauri-apps/tauri) to deliver a smooth, cross-platform experience across macOS, Windows, Linux, Android, iOS, and the Web.
 
+> This fork adds **Word Gloss** — an AI-powered vocabulary learning feature for Chinese readers. While reading Chinese ebooks, it automatically replaces select Chinese words with English translations, displaying phonetic hints (谐音) above them, helping readers naturally acquire English vocabulary while reading.
+
 [![Website][badge-website]][link-website]
 [![Web App][badge-web-app]][link-web-readest]
 [![OS][badge-platforms]][link-website]
@@ -63,6 +65,7 @@
 | **Sync across Platforms**                  | Synchronize book files, reading progress, notes, and bookmarks across all supported platforms.                         | ✅         |
 | [**Sync with Koreader**][link-kosync-wiki] | Synchronize reading progress, notes, and bookmarks with [Koreader][link-koreader] devices.                             | ✅         |
 | **Accessibility**                          | Provides full keyboard navigation and supports for screen readers such as VoiceOver, TalkBack, NVDA, and Orca.         | ✅         |
+| **Word Gloss (词汇注释)**                  | AI-powered vocabulary learning: replaces select Chinese words with English + phonetic hints while reading.             | ✅         |
 | **Visual & Focus Aids**                    | Reading ruler, paragraph-by-paragraph reading mode, and speed reading features.                                        | ✅         |
 
 ## Planned Features

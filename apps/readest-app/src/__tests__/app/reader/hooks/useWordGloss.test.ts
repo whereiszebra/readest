@@ -11,8 +11,23 @@
  * 开启/关闭功能时，文字的行间距应保持一致。
  */
 
-import { describe, it, expect } from 'vitest';
-import { applyRubyToNode, parseValue, hasChinese } from '@/app/reader/hooks/useWordGloss';
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  applyRubyToNode,
+  parseValue,
+  hasChinese,
+  groupAdjacentElements,
+  exposureCount,
+  wordBank,
+} from '@/app/reader/hooks/useWordGloss';
+
+// 每个测试前清空曝光计数和词库，避免测试间相互污染
+beforeEach(() => {
+  exposureCount.clear();
+  for (const key of Object.keys(wordBank)) {
+    delete wordBank[key as keyof typeof wordBank];
+  }
+});
 
 // ---------------------------------------------------------------------------
 // 辅助函数
@@ -156,6 +171,27 @@ describe('applyRubyToNode 排版影响', () => {
     expect(annotations[1]!.textContent).toContain('电脑');
   });
 
+  it('同一词第二次出现时注释只显示谐音（无冒号、无中文）', () => {
+    // 第一次曝光：完整格式「苹果:阿婆」
+    const para1 = makePara('苹果很好吃');
+    Array.from(para1.childNodes).forEach((child) =>
+      applyRubyToNode(child, [{ cn: '苹果', en: 'apple', phonetic: '阿婆' }]),
+    );
+    const ann1 = findAnnotations(para1);
+    expect(ann1[0]!.textContent).toBe('苹果:阿婆');
+
+    // 第二次曝光：只有谐音
+    const para2 = makePara('苹果也不错');
+    Array.from(para2.childNodes).forEach((child) =>
+      applyRubyToNode(child, [{ cn: '苹果', en: 'apple', phonetic: '阿婆' }]),
+    );
+    const ann2 = findAnnotations(para2);
+    expect(ann2[0]!.textContent).toBe('阿婆');
+    // 不应该包含冒号
+    expect(ann2[0]!.textContent).not.toContain(':');
+    expect(ann2[0]!.textContent).not.toContain('苹果');
+  });
+
   it('不含中文词的段落不做任何修改', () => {
     const para = makePara('hello world');
     const originalHTML = para.innerHTML;
@@ -239,5 +275,179 @@ describe('行高影响量化', () => {
     const wrappers = findWrappers(para);
     expect(wrappers.length).toBe(0);
     expect(para.textContent).toContain('apple');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// groupAdjacentElements —— 段落合并
+// ---------------------------------------------------------------------------
+
+describe('groupAdjacentElements', () => {
+  /** 创建一个 <div> 容器，里面放几个 <p> 子元素 */
+  function makeContainer(texts: string[]): HTMLDivElement {
+    const div = document.createElement('div');
+    for (const t of texts) {
+      const p = document.createElement('p');
+      p.textContent = t;
+      div.appendChild(p);
+    }
+    return div;
+  }
+
+  it('相邻的三个段落合并为一组', () => {
+    const container = makeContainer(['今天天气很好', '我去公园散步', '看到了很多花']);
+    const elements = Array.from(container.querySelectorAll<HTMLElement>('p'));
+    const groups = groupAdjacentElements(elements);
+
+    expect(groups.length).toBe(1);
+    expect(groups[0]!.length).toBe(3);
+  });
+
+  it('中间被非同类元素隔开，分成两组', () => {
+    const container = makeContainer(['第一段', '第二段', '第三段']);
+    // 在第二段和第三段之间插入一个 <div>
+    const div = document.createElement('div');
+    const third = container.children[2]!;
+    container.insertBefore(div, third);
+
+    const elements = Array.from(container.querySelectorAll<HTMLElement>('p'));
+    const groups = groupAdjacentElements(elements);
+
+    // 前两个 <p> 相邻 → 一组，第三个 <p> 被 <div> 隔开 → 另一组
+    expect(groups.length).toBe(2);
+    expect(groups[0]!.length).toBe(2);
+    expect(groups[1]!.length).toBe(1);
+  });
+
+  it('单独一个元素也作为一组', () => {
+    const container = makeContainer(['独自一段']);
+    const elements = Array.from(container.querySelectorAll<HTMLElement>('p'));
+    const groups = groupAdjacentElements(elements);
+
+    expect(groups.length).toBe(1);
+    expect(groups[0]!.length).toBe(1);
+  });
+
+  it('空数组返回空', () => {
+    expect(groupAdjacentElements([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// exposureCount —— 词汇曝光计数
+// ---------------------------------------------------------------------------
+
+describe('exposureCount', () => {
+  it('每次替换时累加对应中文词的计数', () => {
+    const para = makePara('苹果和电脑。');
+    const items = [
+      { cn: '苹果', en: 'apple', phonetic: '阿婆' },
+      { cn: '电脑', en: 'computer', phonetic: null },
+    ];
+    Array.from(para.childNodes).forEach((child) => applyRubyToNode(child, items));
+
+    // applyRubyToNode 内部会调用 recordExposure 累加计数
+    expect(exposureCount.get('苹果')).toBe(1);
+    expect(exposureCount.get('电脑')).toBe(1);
+  });
+
+  it('同一个词多次出现则累加', () => {
+    const para1 = makePara('苹果很好吃');
+    const para2 = makePara('苹果也不错');
+    const items = [{ cn: '苹果', en: 'apple', phonetic: '阿婆' }];
+    Array.from(para1.childNodes).forEach((child) => applyRubyToNode(child, items));
+    Array.from(para2.childNodes).forEach((child) => applyRubyToNode(child, items));
+
+    expect(exposureCount.get('苹果')).toBe(2);
+  });
+
+  // 这是一个演示用例，模拟读完几个段落后查看曝光统计。
+  // 运行后可以在 VS Code 测试输出面板看到 table 形式的报告。
+  it('【演示】模拟阅读后查看曝光统计', () => {
+    // 模拟：读到 3 个段落，其中"电脑"出现 3 次，"苹果"出现 2 次，"手机"出现 1 次
+    const items = [
+      { cn: '电脑', en: 'computer', phonetic: '可木皮特' },
+      { cn: '苹果', en: 'apple', phonetic: '阿婆' },
+      { cn: '手机', en: 'phone', phonetic: null },
+    ];
+
+    for (const paraText of ['电脑很好用', '苹果和电脑', '手机和电脑和苹果']) {
+      const p = makePara(paraText);
+      Array.from(p.childNodes).forEach((child) => applyRubyToNode(child, items));
+    }
+
+    // 打印曝光报告（process.stderr.write 绕过 vitest 的 console 过滤）
+    const report = Array.from(exposureCount.entries())
+      .map(([word, count]) => `${word}: ${count}次`)
+      .join('\n');
+    process.stderr.write(`\n===== 词汇曝光统计 =====\n${report}\n\n`);
+
+    // 断言：电脑 3 次，苹果 2 次，手机 1 次
+    expect(exposureCount.get('电脑')).toBe(3);
+    expect(exposureCount.get('苹果')).toBe(2);
+    expect(exposureCount.get('手机')).toBe(1);
+  });
+
+  it('达到曝光上限的词不再替换', () => {
+    const items = [{ cn: '苹果', en: 'apple', phonetic: '阿婆' }];
+
+    // 直接设定曝光计数已达到上限（MAX_EXPOSURE = 100），验证过滤逻辑
+    exposureCount.set('苹果', 100);
+
+    const para = makePara('苹果很好吃');
+    Array.from(para.childNodes).forEach((child) => applyRubyToNode(child, items));
+    // 段落保持原样（中文没被替换）
+    expect(para.innerHTML).toBe('苹果很好吃');
+    // 计数也不再增加，保持原值
+    expect(exposureCount.get('苹果')).toBe(100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wordBank —— 词库持久化
+// ---------------------------------------------------------------------------
+
+describe('wordBank', () => {
+  it('首次曝光时词库记录完整信息', () => {
+    const para = makePara('苹果很好吃');
+    Array.from(para.childNodes).forEach((child) =>
+      applyRubyToNode(child, [{ cn: '苹果', en: 'apple', phonetic: '阿婆' }]),
+    );
+
+    expect(wordBank['苹果']).toEqual({ en: 'apple', phonetic: '阿婆', count: 1 });
+  });
+
+  it('多次曝光时 count 累加', () => {
+    const items = [{ cn: '电脑', en: 'computer', phonetic: '可木皮特' }];
+    for (let i = 0; i < 3; i++) {
+      const p = makePara('电脑很好用');
+      Array.from(p.childNodes).forEach((child) => applyRubyToNode(child, items));
+    }
+
+    expect(wordBank['电脑']).toEqual({ en: 'computer', phonetic: '可木皮特', count: 3 });
+  });
+
+  it('没有谐音时 phonetic 为 null', () => {
+    const para = makePara('手机很好用');
+    Array.from(para.childNodes).forEach((child) =>
+      applyRubyToNode(child, [{ cn: '手机', en: 'phone', phonetic: null }]),
+    );
+
+    expect(wordBank['手机']).toEqual({ en: 'phone', phonetic: null, count: 1 });
+  });
+
+  it('词库与 exposureCount 保持同步', () => {
+    const para = makePara('苹果和电脑');
+    Array.from(para.childNodes).forEach((child) =>
+      applyRubyToNode(child, [
+        { cn: '苹果', en: 'apple', phonetic: '阿婆' },
+        { cn: '电脑', en: 'computer', phonetic: '可木皮特' },
+      ]),
+    );
+
+    // exposureCount 和 wordBank 中相同词的 count 一致
+    for (const [cn, record] of Object.entries(wordBank)) {
+      expect(exposureCount.get(cn)).toBe(record.count);
+    }
   });
 });

@@ -144,27 +144,9 @@ NEXT_PUBLIC_DEEPSEEK_WORD_GLOSS_KEY=<your-key>
 - Android WebView 上 `<ruby>/<rt>` 对齐失效 → 改用 `inline-flex` 列布局解决
 - 对齐问题确认已修复（用户验证通过）
 
-**待修复问题（最新）：**
+**已修复（2026-05-28）：**
 
-英文单词左右出现多余空白，原因是注释文字宽于英文单词，撑宽了 flex 容器：
-
-```
-陈嘉措的   handwriting 很好看   ← 多余空白
-```
-
-**修复方案**（尚未应用到代码）：
-
-将 `useWordGloss.ts` 中 wrapper/annotation 样式从 `inline-flex` 列布局改为 `inline-block + position:absolute` 注释悬浮：
-
-```javascript
-// wrapper
-wrapper.style.cssText =
-  'display:inline-block;position:relative;white-space:nowrap;vertical-align:bottom;';
-
-// annotation（绝对定位，不占宽度）
-annotation.style.cssText =
-  'position:absolute;bottom:100%;left:50%;transform:translateX(-50%);font-size:0.6em;opacity:0.4;white-space:nowrap;letter-spacing:0;line-height:1.3;';
-```
+英文单词左右多余空白问题已修复。将 wrapper/annotation 从 `inline-flex` 列布局改为 `inline-block + position:absolute` 注释悬浮，注释不再占用宽度。
 
 ### Android 构建流程
 

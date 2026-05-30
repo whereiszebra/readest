@@ -10,7 +10,7 @@ SIGNED="src-tauri/gen/android/app/build/outputs/apk/universal/release/readest-de
 KEYSTORE="$HOME/.android/debug.keystore"
 
 # Build
-all_proxy=socks5://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890 \
+all_proxy=socks5://127.0.0.1:7890 \
   pnpm tauri android build -t aarch64 -- --features devtools
 
 # Sign

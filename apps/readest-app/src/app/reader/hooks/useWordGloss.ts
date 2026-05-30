@@ -27,8 +27,111 @@ import { getVocabReplacements, clearVocabCache } from '@/services/wordGloss/deep
 // 㐀-䶿  → 扩展 A 区
 const CJK_RE = /[一-鿿㐀-䶿]/;
 
-// 只要字符串里包含至少一个中文字符，就返回 true
+//判断是否有中文的函数
 export const hasChinese = (t: string) => CJK_RE.test(t);
+
+// 词汇曝光计数器 —— 记录每个中文词被替换了多少次。
+// 在整个应用生命周期内持续累加，可在浏览器控制台通过 window.__wordGlossExposure 查看。
+export const exposureCount = new Map<string, number>();
+
+// ---------------------------------------------------------------------------
+// 词库持久化（localStorage）
+// ---------------------------------------------------------------------------
+
+/** 词库中每条词的记录 */
+export interface WordRecord {
+  en: string; // 英文翻译
+  phonetic: string | null; // 谐音
+  count: number; // 累计曝光次数
+}
+
+const WORD_BANK_KEY = 'readest-wordbank';
+
+/** 词库：中文词 → 翻译记录。从 localStorage 加载，每次曝光时更新。 */
+export const wordBank: Record<string, WordRecord> = {};
+
+/** 从 localStorage 加载词库（模块初始化时执行一次） */
+function loadWordBank(): void {
+  try {
+    const raw = localStorage.getItem(WORD_BANK_KEY);
+    if (raw) {
+      const data = JSON.parse(raw) as Record<string, WordRecord>;
+      for (const [cn, record] of Object.entries(data)) {
+        wordBank[cn] = record;
+        exposureCount.set(cn, record.count);
+      }
+    }
+  } catch {
+    // localStorage 不可用或数据损坏时静默跳过
+  }
+}
+
+/** 将词库写入 localStorage */
+function saveWordBank(): void {
+  try {
+    localStorage.setItem(WORD_BANK_KEY, JSON.stringify(wordBank));
+  } catch {
+    // localStorage 满或不可用时静默跳过
+  }
+}
+
+// 模块初始化：从 localStorage 恢复词库
+if (typeof window !== 'undefined') {
+  loadWordBank();
+}
+
+// 同一个词最多被替换的次数，超出后不再替换。
+// 参考 Kindle Word Wise：已熟悉的词汇不再提示，减少阅读干扰。
+// 设为 50——一本中文书里常见词可能在前几章就出现很多次。
+const MAX_EXPOSURE = 100;
+
+/** 记录一次词汇曝光（在 applyRubyToNode 替换中文词时调用） */
+function recordExposure(cn: string, en: string, phonetic: string | null): void {
+  const count = (exposureCount.get(cn) ?? 0) + 1;
+  exposureCount.set(cn, count);
+
+  // 更新词库并持久化
+  wordBank[cn] = { en, phonetic, count };
+  saveWordBank();
+}
+
+// ---------------------------------------------------------------------------
+// 段落合并 —— 把相邻的同类型元素归为一组
+// ---------------------------------------------------------------------------
+
+/**
+ * 将 DOM 元素列表中相邻的兄弟元素合并为一组。
+ *
+ * 例如 [p1, p2, p3] 如果 p1/p2/p3 在 DOM 树中相邻
+ * → [[p1, p2, p3]]
+ *
+ * 如果 p2 和 p3 之间被 <div> 隔开
+ * → [[p1, p2], [p3]]
+ *
+ * 合并后以组为单位发送 DeepSeek，减少每页翻译词数。
+ */
+export function groupAdjacentElements(elements: HTMLElement[]): HTMLElement[][] {
+  const groups: HTMLElement[][] = [];
+  let current: HTMLElement[] = [];
+
+  for (const el of elements) {
+    if (current.length === 0) {
+      current.push(el);
+    } else {
+      // 检查当前元素是否紧跟在上一元素的后面（DOM 中的下一个兄弟）
+      const last = current[current.length - 1]!;
+      if (last.nextElementSibling === el) {
+        current.push(el);
+      } else {
+        groups.push(current);
+        current = [el];
+      }
+    }
+  }
+
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
 
 // ---------------------------------------------------------------------------
 // 第二部分：数据结构 —— 定义我们要用到的「数据模型」
@@ -46,7 +149,9 @@ interface ParaData {
 // AI 返回的每条词汇翻译数据。
 // 比如用户原文是「苹果」，AI 返回 "apple（阿婆）"，
 // 那么 cn="苹果", en="apple", phonetic="阿婆"
-// TODO:让claude 解释这个RubyItem的名字为啥要用 Ruby
+// Named after the HTML <ruby> element (https://developer.mozilla.org/en-US/docs/Web/HTML/Element/ruby),
+// which is designed for annotating text with pronunciation or meaning — small ruby text above the base text,
+// exactly the visual pattern we use here: annotation floating above the translated word.
 interface RubyItem {
   cn: string; // 中文原词（Chinese）
   en: string; // 英文翻译（English）
@@ -86,6 +191,9 @@ export function parseValue(val: string): { en: string; phonetic: string | null }
 //   node  → 要处理的 HTML 节点（可能是一段文字、一个列表项等等）
 //   items → AI 返回的词汇对照表，比如 [{cn:"苹果", en:"apple", phonetic:"阿婆"}, ...]
 export function applyRubyToNode(node: Node, items: RubyItem[]): void {
+  // 过滤掉已超过曝光上限的词（读得多了不需要再提示）
+  const fresh = items.filter((item) => (exposureCount.get(item.cn) ?? 0) < MAX_EXPOSURE);
+  if (fresh.length === 0) return;
   // ------------------------------------------------------------------
   // 情况 A：这个节点是「纯文本节点」（比如 <p> 里的文字内容）
   // ------------------------------------------------------------------
@@ -94,7 +202,7 @@ export function applyRubyToNode(node: Node, items: RubyItem[]): void {
 
     // 快速检查：这段文本里有没有我们要替换的中文词？
     // 如果完全没有，直接跳过，不浪费性能。
-    if (!items.some(({ cn }) => text.includes(cn))) return;
+    if (!fresh.some(({ cn }) => text.includes(cn))) return;
 
     // doc → 当前文档对象，用来创建新的 HTML 元素
     const doc = node.ownerDocument ?? document;
@@ -109,7 +217,7 @@ export function applyRubyToNode(node: Node, items: RubyItem[]): void {
       // 在所有 AI 给的词里，找「在 rest 中最早出现」的那一个
       // best 记录：{ idx: 出现的位置, item: 对应的词汇数据 }
       let best: { idx: number; item: RubyItem } | null = null;
-      for (const item of items) {
+      for (const item of fresh) {
         const idx = rest.indexOf(item.cn);
         // 如果找到了，而且它比当前 best 更靠前，就更新 best
         if (idx !== -1 && (!best || idx < best.idx)) best = { idx, item };
@@ -130,6 +238,9 @@ export function applyRubyToNode(node: Node, items: RubyItem[]): void {
       // ------------------------------------------------------------------
 
       if (best.item.phonetic) {
+        // 首次曝光显示完整格式「中文:谐音」，之后只显示谐音（读者已知道对应关系）
+        const isFirstExposure = (exposureCount.get(best.item.cn) ?? 0) === 0;
+        recordExposure(best.item.cn, best.item.en, best.item.phonetic);
         // --- 有谐音的情况：创建一个「英文 + 上方注释」的结构 ---
         //
         // 最终渲染效果（用户看到的）：
@@ -169,7 +280,9 @@ export function applyRubyToNode(node: Node, items: RubyItem[]): void {
         //    - font-size:0.6em：字号是英文的 60%，很小，不抢眼
         //    - opacity:0.4：半透明，像水印一样淡
         const annotation = doc.createElement('span');
-        annotation.textContent = `${best.item.cn}:${best.item.phonetic}`;
+        annotation.textContent = isFirstExposure
+          ? `${best.item.cn}:${best.item.phonetic}`
+          : best.item.phonetic;
         annotation.style.cssText =
           'position:absolute;top:-1.05em;left:50%;transform:translateX(-50%);font-size:0.6em;opacity:0.4;white-space:nowrap;letter-spacing:0;line-height:1.3;';
 
@@ -184,6 +297,7 @@ export function applyRubyToNode(node: Node, items: RubyItem[]): void {
       } else {
         // --- 没有谐音的情况：直接用纯文本英文替换 ---
         // 比如 AI 只返回了 "the"，没有谐音，那就直接放 "the" 进去
+        recordExposure(best.item.cn, best.item.en, null);
         frag.appendChild(doc.createTextNode(best.item.en));
       }
 
@@ -202,7 +316,7 @@ export function applyRubyToNode(node: Node, items: RubyItem[]): void {
     // ------------------------------------------------------------------
     // Array.from 把「活的子节点列表」快照成一个固定数组，
     // 防止在遍历过程中因为替换操作导致列表变化，引发 bug
-    Array.from(node.childNodes).forEach((child) => applyRubyToNode(child, items));
+    Array.from(node.childNodes).forEach((child) => applyRubyToNode(child, fresh));
   }
 }
 
@@ -226,6 +340,12 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
   // --- 5b. API Key（从环境变量里读） ---
   // 这是在 .env.local 文件里配置的 DeepSeek API 密钥
   const apiKey = process.env['NEXT_PUBLIC_DEEPSEEK_WORD_GLOSS_KEY'] ?? '';
+  console.log(
+    '[WordGloss] init: apiKey',
+    apiKey ? 'present' : 'MISSING',
+    'enabled:',
+    viewSettings?.wordGlossEnabled,
+  );
 
   // --- 5c. 数据仓库 ---
   // 一个 Map（键值对仓库），用来记住每个段落的原始 HTML。
@@ -233,6 +353,28 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
   // 值 = { originalHTML, applied }
   // 为什么用 useRef？因为这个 Map 不需要触发 React 重渲染，只是自己记着用。
   const dataMap = useRef(new Map<HTMLElement, ParaData>());
+
+  // 段落分组：将相邻的同类型元素映射到其所属组的所有成员。
+  // 键 = 组内任一元素，值 = 组内全体成员数组。
+  // 当任一成员进入视野时，合并整组文本发送 DeepSeek。
+  const groupMap = useRef(new Map<HTMLElement, HTMLElement[]>());
+
+  // 并发锁：防止多个 prefetch 同时执行导致重复嵌套处理。
+  // prefetch 是 async 的，如果两个 observer 回调几乎同时触发，
+  // 两个都会通过 applied 检查，然后同时对所有元素调用 applyRubyToNode，
+  // 第二次调用会在已创建的 wrapper 内部的 annotation 中文上再次匹配替换，
+  // 导致嵌套 wrapper（annotation 越来越小越来越淡）。
+  const prefetchingRef = useRef(false);
+
+  // 挂到 window 上，方便在浏览器控制台调试
+  if (typeof window !== 'undefined') {
+    // @ts-expect-error - debug-only property
+    window.__wordGlossExposure = exposureCount;
+    // @ts-expect-error - debug-only property
+    window.__wordGlossGroupMap = groupMap.current;
+    // @ts-expect-error - debug-only property
+    window.__wordGlossBank = wordBank;
+  }
 
   // --- 5d. 应用替换：把 AI 返回的结果写入页面 ---
   //
@@ -250,47 +392,91 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
     Array.from(el.childNodes).forEach((child) => applyRubyToNode(child, items));
   }, []);
 
-  // --- 5e. 预取并处理一个段落（prefetch） ---
+  // --- 5e. 预取并处理（prefetch） ---
   //
   // 这是「触发 AI 处理」的入口函数。
   // 当一个段落滚动进用户视野时，这个函数被调用。
   //
-  // 流程：
-  //   1. 检查这个段落是不是已经处理过了（避免重复调用 AI，浪费钱和时间）
-  //   2. 取文本内容，跳过太短的、没中文的
-  //   3. 保存原始 HTML（为了以后恢复）
-  //   4. 发请求给 AI，拿到对照表
-  //   5. 在页面上做替换
-  //   6. 标记为「已处理」
+  // 流程（整页模式）：
+  //   1. 检查整页是否已处理过 → 已处理则跳过
+  //   2. 合并 dataMap 中所有段落的文本（整页文字）
+  //   3. 发给 DeepSeek，一次返回 3-5 个高频词
+  //   4. 对所有段落应用替换，标记整页为已处理
   const prefetch = useCallback(
-    async (el: HTMLElement) => {
-      // 查一下这个段落有没有记录
-      const existing = dataMap.current.get(el);
-      // 如果已经处理过了，直接跳过
-      if (existing?.applied) return;
+    async (_el: HTMLElement) => {
+      // 并发锁：如果已有 prefetch 正在执行，直接跳过
+      if (prefetchingRef.current) {
+        console.log('[WordGloss] prefetch skip: already prefetching');
+        return;
+      }
 
-      // 取文本内容，去掉首尾空白
-      const text = el.textContent?.trim() ?? '';
-      // 过滤：没内容的不处理、没中文的不处理、太短的不处理（不到 4 个字不值得）
-      if (!text || !hasChinese(text) || text.length < 4) return;
+      // 收集整页所有已注册的段落元素
+      const allElements = Array.from(dataMap.current.keys());
 
-      // 保存原始 HTML（如果之前没保存过的话）
-      const originalHTML = existing?.originalHTML ?? el.innerHTML;
-      dataMap.current.set(el, { originalHTML, applied: false });
+      // 如果整页已处理过，跳过
+      if (allElements.some((m) => dataMap.current.get(m)?.applied)) {
+        console.log('[WordGloss] prefetch skip: page already processed');
+        return;
+      }
+
+      // 合并整页所有段落的文本
+      const allText = allElements
+        .map((m) => m.textContent?.trim() ?? '')
+        .filter(Boolean)
+        .join('\n');
+
+      // 过滤：没内容的不处理、没中文的不处理、太短的不处理
+      if (!allText || !hasChinese(allText) || allText.length < 10) {
+        console.log('[WordGloss] prefetch skip: text filtered', {
+          hasContent: !!allText,
+          hasChinese: hasChinese(allText),
+          length: allText.length,
+        });
+        return;
+      }
+
+      console.log(
+        '[WordGloss] prefetch start, page text length:',
+        allText.length,
+        'elements:',
+        allElements.length,
+      );
+
+      // 加锁：防止并发的 prefetch 重复处理同一页元素
+      prefetchingRef.current = true;
+
+      // 保存所有元素的原始 HTML
+      for (const m of allElements) {
+        const existing = dataMap.current.get(m);
+        const originalHTML = existing?.originalHTML ?? m.innerHTML;
+        dataMap.current.set(m, { originalHTML, applied: false });
+      }
 
       try {
         // 调用 AI 服务，拿到词汇对照表
-        // getVocabReplacements 内部会：检查缓存 → 缓存有就直接返回 → 没有就调 DeepSeek API
-        const replacements = await getVocabReplacements(text, apiKey);
-        // 如果 AI 确实返回了要替换的词（对照表不为空），就替换
+        console.log('[WordGloss] calling DeepSeek API...');
+        const replacements = await getVocabReplacements(allText, apiKey);
+        console.log('[WordGloss] API returned:', replacements);
+        // 对所有元素应用替换
         if (Object.keys(replacements).length > 0) {
-          applyReplacements(el, replacements);
+          for (const m of allElements) {
+            applyReplacements(m, replacements);
+          }
+          console.log('[WordGloss] applied to', allElements.length, 'element(s)');
+        } else {
+          console.log('[WordGloss] API returned empty object, no words selected');
         }
-        // 标记为「已处理」
-        dataMap.current.set(el, { originalHTML, applied: true });
+        // 标记整页为已处理
+        for (const m of allElements) {
+          const data = dataMap.current.get(m);
+          if (data) dataMap.current.set(m, { originalHTML: data.originalHTML, applied: true });
+        }
       } catch (err) {
         // API 调用失败也不影响阅读，静默处理，只是在控制台留个记录方便排查
         console.warn('[WordGloss] prefetch failed:', err);
+      } finally {
+        // 释放锁
+        prefetchingRef.current = false;
       }
     },
     [apiKey, applyReplacements],
@@ -350,10 +536,8 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          // entry.isIntersecting → true 表示这个元素进入屏幕了
-          // enabledRef.current   → 用户是不是开着词汇注释功能
-          // 两个条件都满足时，才触发预取
           if (entry.isIntersecting && enabledRef.current) {
+            console.log('[WordGloss] observer: element entered viewport');
             prefetch(entry.target as HTMLElement);
           }
         }
@@ -370,20 +554,43 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
     //   blockquote → 引用块
     //   dd        → 描述列表的描述项
     //
-    // 然后对每个元素：
-    //   1. 检查文本是否够长（>4 字）且包含中文
-    //   2. 保存它的原始 HTML（如果还没保存）
-    //   3. 让 observer 开始盯着它
+    // 然后：
+    //   1. 筛选出文本够长（>4 字）且包含中文的
+    //   2. 将相邻的同类型元素合并为一组
+    //   3. 对每个元素保存原始 HTML 并让 observer 盯着它
+    //   （同组内任一元素进入视野时，会合并全组文本发给 DeepSeek）
     const attachToDoc = (doc: Document) => {
+      // 第一步：收集所有符合条件的元素
+      const elements: HTMLElement[] = [];
       doc.querySelectorAll<HTMLElement>('p, li, blockquote, dd').forEach((el) => {
         const text = el.textContent?.trim() ?? '';
         if (text.length > 4 && hasChinese(text)) {
+          elements.push(el);
+        }
+      });
+
+      // 第二步：按 DOM 相邻关系分组
+      const groups = groupAdjacentElements(elements);
+      console.log(
+        '[WordGloss] attachToDoc:',
+        elements.length,
+        'elements →',
+        groups.length,
+        'groups',
+      );
+
+      // 第三步：对每个组的每个元素建立映射并设置 observer
+      for (const group of groups) {
+        for (const el of group) {
+          // 将组内任一元素映射到全组成员
+          groupMap.current.set(el, group);
+          // 保存原始 HTML
           if (!dataMap.current.has(el)) {
             dataMap.current.set(el, { originalHTML: el.innerHTML, applied: false });
           }
           observer.observe(el);
         }
-      });
+      }
     };
 
     // --- 当书本内容加载完毕时 ---
@@ -431,6 +638,13 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
     if (!viewSettings) return;
     const enabled = viewSettings.wordGlossEnabled ?? false;
     enabledRef.current = enabled;
+
+    console.log(
+      '[WordGloss] toggle:',
+      enabled ? 'ON' : 'OFF',
+      'dataMap size:',
+      dataMap.current.size,
+    );
 
     if (!enabled) {
       // 关掉 → 恢复原文
