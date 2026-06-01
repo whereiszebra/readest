@@ -58,8 +58,10 @@ interface ReaderStore {
   viewStates: { [key: string]: ViewState };
   bookKeys: string[];
   hoveredBookKey: string | null;
+  finishedBookKey: string | null;
   setBookKeys: (keys: string[]) => void;
   setHoveredBookKey: (key: string | null) => void;
+  setFinishedBookKey: (key: string | null) => void;
   setBookmarkRibbonVisibility: (key: string, visible: boolean) => void;
   setTTSEnabled: (key: string, enabled: boolean) => void;
   setIsLoading: (key: string, loading: boolean) => void;
@@ -101,8 +103,10 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
   viewStates: {},
   bookKeys: [],
   hoveredBookKey: null,
+  finishedBookKey: null,
   setBookKeys: (keys: string[]) => set({ bookKeys: keys }),
   setHoveredBookKey: (key: string | null) => set({ hoveredBookKey: key }),
+  setFinishedBookKey: (key: string | null) => set({ finishedBookKey: key }),
   getView: (key: string | null) => (key && get().viewStates[key]?.view) || null,
   setView: (key: string, view) =>
     set((state) => ({
@@ -355,7 +359,8 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
     pageinfo: PageInfo,
     timeinfo: TimeInfo,
     range: Range,
-  ) =>
+  ) => {
+    let finishedBookKey: string | null = null;
     set((state) => {
       const id = key.split('-')[0]!;
       const bookData = useBookDataStore.getState().booksData[id];
@@ -378,6 +383,11 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
           newReadingStatus = 'finished';
         }
         updateBookProgress(id, progress, newReadingStatus);
+      }
+      // Use store's finishedBookKey (session-level) as guard, not persisted readingStatus.
+      // This way re-opening an already-finished book still triggers the prompt.
+      if (progressPercentage >= 100 && !state.finishedBookKey) {
+        finishedBookKey = key;
       }
 
       const oldConfig = bookData.config;
@@ -417,7 +427,11 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
           },
         },
       };
-    }),
+    });
+    if (finishedBookKey) {
+      set({ finishedBookKey });
+    }
+  },
   setBookmarkRibbonVisibility: (key: string, visible: boolean) =>
     set((state) => ({
       viewStates: {

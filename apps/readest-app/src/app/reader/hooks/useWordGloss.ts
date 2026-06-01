@@ -43,22 +43,31 @@ export interface WordRecord {
   en: string; // 英文翻译
   phonetic: string | null; // 谐音
   count: number; // 累计曝光次数
+  books: string[]; // 出现在哪些书里（bookKey 去重数组）
+  mastered: boolean; // 已掌握标记（测验跳过该词，翻译不受影响）
 }
 
-const WORD_BANK_KEY = 'readest-wordbank';
+export const WORD_BANK_KEY = 'readest-wordbank';
 
 /** 词库：中文词 → 翻译记录。从 localStorage 加载，每次曝光时更新。 */
 export const wordBank: Record<string, WordRecord> = {};
 
-/** 从 localStorage 加载词库（模块初始化时执行一次） */
-function loadWordBank(): void {
+/** 从 localStorage 加载词库，并迁移旧数据格式（缺失 books/mastered 字段时补默认值） */
+export function loadWordBank(): void {
   try {
     const raw = localStorage.getItem(WORD_BANK_KEY);
     if (raw) {
-      const data = JSON.parse(raw) as Record<string, WordRecord>;
+      const data = JSON.parse(raw) as Record<string, Partial<WordRecord>>;
       for (const [cn, record] of Object.entries(data)) {
-        wordBank[cn] = record;
-        exposureCount.set(cn, record.count);
+        // 迁移：旧数据可能没有 books 和 mastered 字段
+        wordBank[cn] = {
+          en: record.en ?? '',
+          phonetic: record.phonetic ?? null,
+          count: record.count ?? 0,
+          books: record.books ?? [],
+          mastered: record.mastered ?? false,
+        };
+        exposureCount.set(cn, record.count ?? 0);
       }
     }
   } catch {
@@ -75,6 +84,24 @@ function saveWordBank(): void {
   }
 }
 
+/** 将指定词标记为已掌握或取消标记（已掌握的词汇在测验中不再出现） */
+export function setWordMastered(cn: string, mastered: boolean): void {
+  if (wordBank[cn]) {
+    wordBank[cn].mastered = mastered;
+    saveWordBank();
+  }
+}
+
+/** 将指定书中所有词汇标记为已掌握 */
+export function setAllBookWordsMastered(bookKey: string): void {
+  for (const record of Object.values(wordBank)) {
+    if (record.books.includes(bookKey)) {
+      record.mastered = true;
+    }
+  }
+  saveWordBank();
+}
+
 // 模块初始化：从 localStorage 恢复词库
 if (typeof window !== 'undefined') {
   loadWordBank();
@@ -86,12 +113,17 @@ if (typeof window !== 'undefined') {
 const MAX_EXPOSURE = 100;
 
 /** 记录一次词汇曝光（在 applyRubyToNode 替换中文词时调用） */
-function recordExposure(cn: string, en: string, phonetic: string | null): void {
+function recordExposure(cn: string, en: string, phonetic: string | null, bookKey: string): void {
   const count = (exposureCount.get(cn) ?? 0) + 1;
   exposureCount.set(cn, count);
 
-  // 更新词库并持久化
-  wordBank[cn] = { en, phonetic, count };
+  const existing = wordBank[cn];
+  const books = existing?.books ?? [];
+  if (bookKey && !books.includes(bookKey)) {
+    books.push(bookKey);
+  }
+
+  wordBank[cn] = { en, phonetic, count, books, mastered: existing?.mastered ?? false };
   saveWordBank();
 }
 
@@ -190,7 +222,7 @@ export function parseValue(val: string): { en: string; phonetic: string | null }
 // 参数说明：
 //   node  → 要处理的 HTML 节点（可能是一段文字、一个列表项等等）
 //   items → AI 返回的词汇对照表，比如 [{cn:"苹果", en:"apple", phonetic:"阿婆"}, ...]
-export function applyRubyToNode(node: Node, items: RubyItem[]): void {
+export function applyRubyToNode(node: Node, items: RubyItem[], bookKey = ''): void {
   // 过滤掉已超过曝光上限的词（读得多了不需要再提示）
   const fresh = items.filter((item) => (exposureCount.get(item.cn) ?? 0) < MAX_EXPOSURE);
   if (fresh.length === 0) return;
@@ -240,7 +272,7 @@ export function applyRubyToNode(node: Node, items: RubyItem[]): void {
       if (best.item.phonetic) {
         // 首次曝光显示完整格式「中文:谐音」，之后只显示谐音（读者已知道对应关系）
         const isFirstExposure = (exposureCount.get(best.item.cn) ?? 0) === 0;
-        recordExposure(best.item.cn, best.item.en, best.item.phonetic);
+        recordExposure(best.item.cn, best.item.en, best.item.phonetic, bookKey);
         // --- 有谐音的情况：创建一个「英文 + 上方注释」的结构 ---
         //
         // 最终渲染效果（用户看到的）：
@@ -297,7 +329,7 @@ export function applyRubyToNode(node: Node, items: RubyItem[]): void {
       } else {
         // --- 没有谐音的情况：直接用纯文本英文替换 ---
         // 比如 AI 只返回了 "the"，没有谐音，那就直接放 "the" 进去
-        recordExposure(best.item.cn, best.item.en, null);
+        recordExposure(best.item.cn, best.item.en, null, bookKey);
         frag.appendChild(doc.createTextNode(best.item.en));
       }
 
@@ -316,7 +348,7 @@ export function applyRubyToNode(node: Node, items: RubyItem[]): void {
     // ------------------------------------------------------------------
     // Array.from 把「活的子节点列表」快照成一个固定数组，
     // 防止在遍历过程中因为替换操作导致列表变化，引发 bug
-    Array.from(node.childNodes).forEach((child) => applyRubyToNode(child, fresh));
+    Array.from(node.childNodes).forEach((child) => applyRubyToNode(child, fresh, bookKey));
   }
 }
 
@@ -340,12 +372,16 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
   // --- 5b. API Key（从环境变量里读） ---
   // 这是在 .env.local 文件里配置的 DeepSeek API 密钥
   const apiKey = process.env['NEXT_PUBLIC_DEEPSEEK_WORD_GLOSS_KEY'] ?? '';
-  console.log(
-    '[WordGloss] init: apiKey',
-    apiKey ? 'present' : 'MISSING',
-    'enabled:',
-    viewSettings?.wordGlossEnabled,
-  );
+  const initedRef = useRef(false);
+  if (!initedRef.current) {
+    initedRef.current = true;
+    console.log(
+      '[WordGloss] init: apiKey',
+      apiKey ? 'present' : 'MISSING',
+      'enabled:',
+      viewSettings?.wordGlossEnabled,
+    );
+  }
 
   // --- 5c. 数据仓库 ---
   // 一个 Map（键值对仓库），用来记住每个段落的原始 HTML。
@@ -384,13 +420,16 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
   // 做的事情：
   //   1. 把 replacements 解析成 RubyItem 数组
   //   2. 遍历段落的每个子节点，找到中文词就替换
-  const applyReplacements = useCallback((el: HTMLElement, replacements: Record<string, string>) => {
-    const items: RubyItem[] = Object.entries(replacements).map(([cn, val]) => {
-      const { en, phonetic } = parseValue(val);
-      return { cn, en, phonetic };
-    });
-    Array.from(el.childNodes).forEach((child) => applyRubyToNode(child, items));
-  }, []);
+  const applyReplacements = useCallback(
+    (el: HTMLElement, replacements: Record<string, string>, bookKey: string) => {
+      const items: RubyItem[] = Object.entries(replacements).map(([cn, val]) => {
+        const { en, phonetic } = parseValue(val);
+        return { cn, en, phonetic };
+      });
+      Array.from(el.childNodes).forEach((child) => applyRubyToNode(child, items, bookKey));
+    },
+    [],
+  );
 
   // --- 5e. 预取并处理（prefetch） ---
   //
@@ -406,7 +445,6 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
     async (_el: HTMLElement) => {
       // 并发锁：如果已有 prefetch 正在执行，直接跳过
       if (prefetchingRef.current) {
-        console.log('[WordGloss] prefetch skip: already prefetching');
         return;
       }
 
@@ -415,7 +453,6 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
 
       // 如果整页已处理过，跳过
       if (allElements.some((m) => dataMap.current.get(m)?.applied)) {
-        console.log('[WordGloss] prefetch skip: page already processed');
         return;
       }
 
@@ -427,11 +464,6 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
 
       // 过滤：没内容的不处理、没中文的不处理、太短的不处理
       if (!allText || !hasChinese(allText) || allText.length < 10) {
-        console.log('[WordGloss] prefetch skip: text filtered', {
-          hasContent: !!allText,
-          hasChinese: hasChinese(allText),
-          length: allText.length,
-        });
         return;
       }
 
@@ -460,7 +492,7 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
         // 对所有元素应用替换
         if (Object.keys(replacements).length > 0) {
           for (const m of allElements) {
-            applyReplacements(m, replacements);
+            applyReplacements(m, replacements, bookKey);
           }
           console.log('[WordGloss] applied to', allElements.length, 'element(s)');
         } else {
@@ -537,7 +569,6 @@ export function useWordGloss(bookKey: string, view: FoliateView | HTMLElement | 
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting && enabledRef.current) {
-            console.log('[WordGloss] observer: element entered viewport');
             prefetch(entry.target as HTMLElement);
           }
         }

@@ -414,7 +414,13 @@ describe('wordBank', () => {
       applyRubyToNode(child, [{ cn: '苹果', en: 'apple', phonetic: '阿婆' }]),
     );
 
-    expect(wordBank['苹果']).toEqual({ en: 'apple', phonetic: '阿婆', count: 1 });
+    expect(wordBank['苹果']).toEqual({
+      en: 'apple',
+      phonetic: '阿婆',
+      count: 1,
+      books: [],
+      mastered: false,
+    });
   });
 
   it('多次曝光时 count 累加', () => {
@@ -424,7 +430,13 @@ describe('wordBank', () => {
       Array.from(p.childNodes).forEach((child) => applyRubyToNode(child, items));
     }
 
-    expect(wordBank['电脑']).toEqual({ en: 'computer', phonetic: '可木皮特', count: 3 });
+    expect(wordBank['电脑']).toEqual({
+      en: 'computer',
+      phonetic: '可木皮特',
+      count: 3,
+      books: [],
+      mastered: false,
+    });
   });
 
   it('没有谐音时 phonetic 为 null', () => {
@@ -433,7 +445,13 @@ describe('wordBank', () => {
       applyRubyToNode(child, [{ cn: '手机', en: 'phone', phonetic: null }]),
     );
 
-    expect(wordBank['手机']).toEqual({ en: 'phone', phonetic: null, count: 1 });
+    expect(wordBank['手机']).toEqual({
+      en: 'phone',
+      phonetic: null,
+      count: 1,
+      books: [],
+      mastered: false,
+    });
   });
 
   it('词库与 exposureCount 保持同步', () => {
@@ -449,5 +467,122 @@ describe('wordBank', () => {
     for (const [cn, record] of Object.entries(wordBank)) {
       expect(exposureCount.get(cn)).toBe(record.count);
     }
+  });
+
+  it('recordExposure 记录 bookKey 到 books 数组', () => {
+    const para = makePara('苹果很好吃');
+    Array.from(para.childNodes).forEach((child) =>
+      applyRubyToNode(child, [{ cn: '苹果', en: 'apple', phonetic: '阿婆' }], 'book-hash-001'),
+    );
+
+    expect(wordBank['苹果']!.books).toContain('book-hash-001');
+  });
+
+  it('同一 bookKey 不重复添加到 books 数组', () => {
+    const items = [{ cn: '电脑', en: 'computer', phonetic: '可木皮特' }];
+    for (let i = 0; i < 3; i++) {
+      const p = makePara('电脑很好用');
+      Array.from(p.childNodes).forEach((child) => applyRubyToNode(child, items, 'book-hash-001'));
+    }
+
+    // books 数组里 book-hash-001 只出现一次
+    const occurrences = wordBank['电脑']!.books.filter((b) => b === 'book-hash-001').length;
+    expect(occurrences).toBe(1);
+  });
+
+  it('mastered 默认值为 false', () => {
+    const para = makePara('手机很好用');
+    Array.from(para.childNodes).forEach((child) =>
+      applyRubyToNode(child, [{ cn: '手机', en: 'phone', phonetic: null }], 'book-hash-001'),
+    );
+
+    expect(wordBank['手机']!.mastered).toBe(false);
+  });
+
+  it('旧数据迁移：缺失 books/mastered 字段时补默认值', async () => {
+    // 模拟旧版本数据格式（没有 books 和 mastered 字段）
+    const oldData = {
+      书房: { en: 'study', phonetic: '书得', count: 5 },
+    };
+    localStorage.setItem('readest-wordbank', JSON.stringify(oldData));
+
+    // 动态导入 loadWordBank 进行迁移
+    const mod = await import('@/app/reader/hooks/useWordGloss');
+    mod.loadWordBank();
+
+    expect(mod.wordBank['书房']!.books).toEqual([]);
+    expect(mod.wordBank['书房']!.mastered).toBe(false);
+
+    // 清理
+    localStorage.removeItem('readest-wordbank');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setWordMastered / setAllBookWordsMastered —— 已掌握标记
+// ---------------------------------------------------------------------------
+
+describe('mastered 标记管理', () => {
+  beforeEach(() => {
+    exposureCount.clear();
+    for (const key of Object.keys(wordBank)) {
+      delete wordBank[key as keyof typeof wordBank];
+    }
+  });
+
+  it('setWordMastered 将指定词标记为已掌握', async () => {
+    // 先曝光一个词
+    const para = makePara('苹果很好吃');
+    Array.from(para.childNodes).forEach((child) =>
+      applyRubyToNode(child, [{ cn: '苹果', en: 'apple', phonetic: '阿婆' }], 'book-001'),
+    );
+
+    const { setWordMastered } = await import('@/app/reader/hooks/useWordGloss');
+    setWordMastered('苹果', true);
+    expect(wordBank['苹果']!.mastered).toBe(true);
+
+    // 可以取消标记
+    setWordMastered('苹果', false);
+    expect(wordBank['苹果']!.mastered).toBe(false);
+  });
+
+  it('setAllBookWordsMastered 只标记指定书的词', async () => {
+    // 书 A 的词
+    let para = makePara('苹果很好吃');
+    Array.from(para.childNodes).forEach((child) =>
+      applyRubyToNode(child, [{ cn: '苹果', en: 'apple', phonetic: '阿婆' }], 'book-A'),
+    );
+    // 书 B 的词
+    para = makePara('电脑很好用');
+    Array.from(para.childNodes).forEach((child) =>
+      applyRubyToNode(child, [{ cn: '电脑', en: 'computer', phonetic: '可木皮特' }], 'book-B'),
+    );
+
+    const { setAllBookWordsMastered } = await import('@/app/reader/hooks/useWordGloss');
+    setAllBookWordsMastered('book-A');
+
+    // 书 A 的词被标记
+    expect(wordBank['苹果']!.mastered).toBe(true);
+    // 书 B 的词不受影响
+    expect(wordBank['电脑']!.mastered).toBe(false);
+  });
+
+  it('已掌握的词汇仍然会被翻译替换（mastered 只影响测验，不影响翻译）', () => {
+    const items = [{ cn: '苹果', en: 'apple', phonetic: '阿婆' }];
+    // 先让词曝光一次
+    const para1 = makePara('苹果很好吃');
+    Array.from(para1.childNodes).forEach((child) => applyRubyToNode(child, items, 'book-001'));
+
+    // 手动标记为已掌握
+    wordBank['苹果']!.mastered = true;
+
+    // 再次出现时，依然被替换（因为 exposureCount < MAX_EXPOSURE）
+    const para2 = makePara('苹果也不错');
+    Array.from(para2.childNodes).forEach((child) => applyRubyToNode(child, items, 'book-001'));
+
+    // 段落内容应包含英文替换
+    expect(para2.textContent).toContain('apple');
+    // exposureCount 继续累加
+    expect(exposureCount.get('苹果')).toBe(2);
   });
 });

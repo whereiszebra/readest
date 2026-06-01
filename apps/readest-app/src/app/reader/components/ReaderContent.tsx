@@ -33,6 +33,7 @@ import { useAuth } from '@/context/AuthContext';
 
 import useBooksManager from '../hooks/useBooksManager';
 import useBookShortcuts from '../hooks/useBookShortcuts';
+import { useBookFinishPrompt } from '../hooks/useBookFinishPrompt';
 import Spinner from '@/components/Spinner';
 import SideBar from './sidebar/SideBar';
 import Notebook from './notebook/Notebook';
@@ -63,6 +64,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
 
   useBookShortcuts({ sideBarBookKey, bookKeys });
   useGamepad();
+  const { bookFinishPrompt } = useBookFinishPrompt();
 
   useEffect(() => {
     if (isInitiating.current) return;
@@ -285,6 +287,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
         cfi={shareDialogState?.cfi ?? null}
         onClose={() => setShareDialogState(null)}
       />
+      {bookFinishPrompt}
     </div>
   );
 };
